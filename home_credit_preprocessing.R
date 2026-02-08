@@ -8,9 +8,6 @@
 #   - Create engineered features (demographic, financial ratios, interactions)
 #   - Aggregate supplementary data (bureau, previous_application, installments)
 #   - Ensure train/test consistency by fitting parameters on train only
-#
-# Author: Generated with AI assistance
-# Date: 2026-02-04
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
