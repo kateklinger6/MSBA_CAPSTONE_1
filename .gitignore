@@ -1,0 +1,43 @@
+# Data files (download from Kaggle)
+*.csv
+*.parquet
+*.feather
+
+# Processed/intermediate data
+*_processed.csv
+*_processed.rds
+
+# Model objects
+*.rds
+*.RData
+*.pkl
+*.joblib
+*.h5
+
+# R artifacts
+.Rhistory
+.Rdata
+.httr-oauth
+.DS_Store
+*.Rproj.user
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# IDE files
+.vscode/
+.idea/
+
+# Quarto/knitr cache and output
+*_cache/
+*_files/
+*.html
+!README.html
+
+# Large files
+*.zip
+*.tar.gz
