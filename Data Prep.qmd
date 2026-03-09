@@ -1,0 +1,413 @@
+---
+title: "Data Preparation and Feature Engineering"
+subtitle: "Home Credit Default Risk - Capstone Project"
+author: "Your Name"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    code-fold: show
+    code-tools: true
+    theme: cosmo
+    number-sections: true
+execute:
+  warning: false
+  message: false
+---
+
+# Overview
+
+This document describes the data cleaning, feature engineering, and aggregation pipeline for the Home Credit Default Risk competition. The goal is to transform raw application data and supplementary datasets into a clean, feature-rich dataset ready for modeling.
+
+## Objectives
+
+1. **Clean and transform** application data based on EDA findings
+2. **Create engineered features** including demographic transformations and financial ratios
+3. **Aggregate supplementary data** (bureau, previous applications, installments) to applicant level
+4. **Ensure train/test consistency** by fitting parameters on training data only
+
+## Data Sources
+
+- `application_train.csv` / `application_test.csv`: Main application data
+- `bureau.csv`: Credit Bureau data on previous credits
+- `previous_application.csv`: Previous loan applications at Home Credit
+- `installments_payments.csv`: Payment history for previous loans
+
+```{r}
+#| label: setup
+#| message: false
+
+# Load required libraries
+library(tidyverse)
+library(janitor)
+library(knitr)
+library(scales)
+
+# Source the preprocessing functions
+source("home_credit_preprocessing.R")
+```
+
+# Data Loading
+
+First, let's load the raw datasets to understand what we're working with.
+
+```{r}
+#| label: load-data
+
+# Load main application data
+train_raw <- read_csv("application_train.csv", show_col_types = FALSE)
+test_raw <- read_csv("application_test.csv", show_col_types = FALSE)
+
+# Display dimensions
+tibble(
+  Dataset = c("Training", "Test"),
+  Rows = c(nrow(train_raw), nrow(test_raw)),
+  Columns = c(ncol(train_raw), ncol(test_raw))
+) |> kable()
+```
+
+# Data Cleaning
+
+## DAYS_EMPLOYED Anomaly
+
+During EDA, we identified that `DAYS_EMPLOYED` contains the placeholder value 365243 (~1000 years), representing unemployed/pensioners.
+
+```{r}
+#| label: days-employed-anomaly
+
+# Check the anomaly
+train_raw |>
+  count(days_employed_anomaly = DAYS_EMPLOYED == 365243) |>
+  mutate(pct = percent(n / sum(n)))
+```
+
+The `fix_days_employed_anomaly()` function handles this by:
+
+1. Creating a binary indicator `days_employed_anomaly` (missingness may be predictive)
+2. Replacing the placeholder with NA
+
+## EXT_SOURCE Missing Values
+
+The `EXT_SOURCE` variables are highly predictive external credit scores with significant missingness:
+
+```{r}
+#| label: ext-source-missing
+
+train_raw |>
+  summarise(
+    ext_source_1_missing = percent(mean(is.na(EXT_SOURCE_1))),
+    ext_source_2_missing = percent(mean(is.na(EXT_SOURCE_2))),
+    ext_source_3_missing = percent(mean(is.na(EXT_SOURCE_3)))
+  ) |>
+  pivot_longer(everything(), names_to = "Variable", values_to = "Missing_Pct")
+```
+
+The `impute_ext_source()` function imputes these using **median values computed from training data only** to prevent data leakage.
+
+## Other Cleaning Steps
+
+The `clean_application_data()` function also handles:
+
+- Converting "XNA" strings to NA (found in `ORGANIZATION_TYPE`)
+- Standardizing column names to snake_case
+- Ensuring flag columns are integers
+
+# Feature Engineering
+
+## Demographic Features
+
+The `create_demographic_features()` function transforms negative day values and creates age-related features:
+
+| Feature | Description |
+|---------|-------------|
+| `age_years` | Age converted from negative days to positive years |
+| `employment_years` | Employment duration in years |
+| `registration_years` | How long client has been registered |
+| `employment_to_age_ratio` | Fraction of adult life employed |
+| `age_group` | Binned age categories |
+| `is_working_age` | Flag for ages 18-65 |
+| `is_young_adult` | Flag for ages less than 30 |
+
+## Financial Ratios
+
+The `create_financial_ratios()` function computes common credit risk ratios:
+
+### Core Credit Ratios
+
+| Ratio | Formula | Interpretation |
+|-------|---------|----------------|
+| Credit-to-Income | AMT_CREDIT / AMT_INCOME_TOTAL | Higher = more leveraged |
+| Annuity-to-Income (DTI proxy) | AMT_ANNUITY / AMT_INCOME_TOTAL | Payment burden |
+| Credit-to-Goods (LTV proxy) | AMT_CREDIT / AMT_GOODS_PRICE | Greater than 1 means financing more than goods value |
+
+### Additional Financial Metrics
+
+| Feature | Description |
+|---------|-------------|
+| `credit_term_months` | Loan term derived from credit/annuity |
+| `income_per_person` | Income divided by family members |
+| `down_payment_ratio` | Proxy for down payment / goods price |
+| `ext_source_mean` | Average of external scores |
+| `ext_source_weighted` | Weighted average (emphasizing more predictive scores) |
+
+## Missing Data Indicators
+
+The `create_missing_indicators()` function adds binary flags for key variables with missingness, as missing patterns are often predictive:
+
+| Variable | Typical Missingness |
+|----------|---------------------|
+| ext_source_1 | ~56 percent |
+| ext_source_3 | ~20 percent |
+| occupation_type | ~31 percent |
+| own_car_age | ~66 percent |
+| amt_goods_price | ~3 percent |
+
+## Interaction and Binned Features
+
+The `create_interaction_features()` function creates:
+ 
+- **Binned variables**: Income and credit quintiles (thresholds from training data)
+- **Categorical interactions**: Gender x Car ownership, Education x Income bin
+- **Numeric interactions**: Age x log(Income), External score x log(Credit)
+- **Polynomial features**: Squared terms for external scores and age
+- **Aggregates**: Document count, contact method count
+
+# Supplementary Data Aggregation
+
+## Bureau Data
+
+The `aggregate_bureau()` function creates features from Credit Bureau history:
+
+| Category | Features |
+|----------|----------|
+| Credit Counts | Total credits, active/closed/sold/bad debt counts, active ratio |
+| Amounts | Total/mean/max credit amounts, debt amounts, utilization ratio |
+| Overdue | Overdue counts, amounts, max days past due, DPD ratio |
+| Timing | Days since first/last credit, credit duration |
+
+## Previous Applications
+
+The `aggregate_previous_application()` function creates features from prior Home Credit applications:
+
+| Category | Features |
+|----------|----------|
+| Application Counts | Total, approved/refused/canceled counts |
+| Rates | Approval rate, refusal rate |
+| Amounts | Applied/credited sums and means, credit-to-application ratio |
+| Refusal Reasons | Client-related refusals, scoring-related refusals |
+
+## Installments Payments
+
+The `aggregate_installments()` function creates payment behavior features:
+
+| Category | Features |
+|----------|----------|
+| Late Payments | Late count/rate, very late (30+ days) count/rate |
+| Days Late | Mean/max/sum days late |
+| Payment Amounts | Total paid vs expected, payment ratio, underpayment metrics |
+| Trends | Version counts (indicates payment plan changes) |
+
+# Train/Test Consistency
+
+## Parameter Fitting Strategy
+
+To prevent **data leakage**, all transformations that require statistical computation use parameters fitted on training data only:
+
+1. **Medians for imputation**: Computed from training, applied to both
+2. **Bin thresholds**: Quintile breaks computed from training
+3. **Column alignment**: Ensure test has same columns as train (except TARGET)
+
+The `fit_preprocessing_params()` function stores all parameters needed for consistent transformation.
+
+## Column Consistency
+
+The `ensure_column_consistency()` function:
+
+1. Adds missing columns to test (filled with NA)
+2. Removes extra columns from test
+3. Reorders test columns to match training
+
+# Running the Pipeline
+
+## Full Pipeline Execution
+
+```{r}
+#| label: run-pipeline
+#| cache: true
+
+# Run the complete preprocessing pipeline
+result <- run_preprocessing_pipeline(
+  train_path = "application_train.csv",
+  test_path = "application_test.csv",
+  bureau_path = "bureau.csv",
+  prev_app_path = "previous_application.csv",
+  installments_path = "installments_payments.csv"
+)
+
+# Extract results
+train_processed <- result$train
+test_processed <- result$test
+params <- result$params
+```
+
+## Pipeline Results Summary
+
+```{r}
+#| label: pipeline-summary
+
+# Summary of processed data
+tibble(
+  Dataset = c("Training", "Test"),
+  Rows = c(nrow(train_processed), nrow(test_processed)),
+  Columns = c(ncol(train_processed), ncol(test_processed))
+) |> kable(caption = "Processed Dataset Dimensions")
+```
+
+### New Features Created
+
+```{r}
+#| label: feature-count
+
+# Count features by category
+original_cols <- ncol(train_raw)
+final_cols <- ncol(train_processed)
+
+tibble(
+  Category = c("Original features", "New features", "Total"),
+  Count = c(original_cols, final_cols - original_cols, final_cols)
+) |> kable()
+```
+
+### Feature Categories
+
+```{r}
+#| label: feature-categories
+
+# Categorize features
+feature_names <- names(train_processed)
+
+tibble(
+  Category = c(
+    "Bureau aggregations",
+    "Previous application aggregations",
+    "Installments aggregations",
+    "Missing indicators",
+    "Financial ratios",
+    "Demographic features",
+    "Interactions"
+  ),
+  Count = c(
+    sum(str_starts(feature_names, "bureau_")),
+    sum(str_starts(feature_names, "prev_app_")),
+    sum(str_starts(feature_names, "inst_")),
+    sum(str_starts(feature_names, "missing_")),
+    sum(str_detect(feature_names, "ratio|to_income|to_credit|per_")),
+    sum(str_detect(feature_names, "age_|employment_|years")),
+    sum(str_detect(feature_names, "interaction|_bin$|squared"))
+  )
+) |> kable()
+```
+
+# Data Quality Checks
+
+## Verify No Data Leakage
+
+```{r}
+#| label: verify-no-leakage
+
+# Check that TARGET only exists in training data
+tibble(
+  Check = c(
+    "TARGET in train",
+    "TARGET in test",
+    "Same columns (except TARGET)"
+  ),
+  Result = c(
+    "target" %in% names(train_processed),
+    "target" %in% names(test_processed),
+    setequal(
+      setdiff(names(train_processed), "target"),
+      names(test_processed)
+    )
+  )
+) |> kable()
+```
+
+## Missing Value Summary
+
+```{r}
+#| label: missing-summary
+
+# Calculate missing percentages for key features
+train_processed |>
+  select(
+    ext_source_1, ext_source_2, ext_source_3,
+    employment_years, credit_to_income,
+    bureau_credit_count, prev_app_count, inst_payment_count
+  ) |>
+  summarise(across(everything(), \(x) percent(mean(is.na(x))))) |>
+  pivot_longer(everything(), names_to = "Feature", values_to = "Missing_Pct") |>
+  kable()
+```
+
+# Save Processed Data
+
+```{r}
+#| label: save-data
+
+# Save processed datasets
+write_csv(train_processed, "train_processed.csv")
+write_csv(test_processed, "test_processed.csv")
+
+# Save preprocessing parameters for reproducibility
+saveRDS(params, "preprocessing_params.rds")
+
+message("Processed data saved successfully!")
+```
+
+# Function Reference
+
+## Cleaning Functions
+
+| Function | Purpose |
+|----------|---------|
+| `fix_days_employed_anomaly()` | Replace 365243 placeholder with NA |
+| `impute_ext_source()` | Median imputation for EXT_SOURCE variables |
+| `clean_application_data()` | Master cleaning function |
+
+## Feature Engineering Functions
+
+| Function | Purpose |
+|----------|---------|
+| `create_demographic_features()` | Age, employment duration, age groups |
+| `create_financial_ratios()` | Credit ratios, income ratios, score combinations |
+| `create_missing_indicators()` | Binary flags for missing values |
+| `create_interaction_features()` | Interactions, bins, polynomial terms |
+
+## Aggregation Functions
+
+| Function | Purpose |
+|----------|---------|
+| `aggregate_bureau()` | Summarize Credit Bureau history |
+| `aggregate_previous_application()` | Summarize prior Home Credit applications |
+| `aggregate_installments()` | Summarize payment behavior |
+
+## Pipeline Functions
+
+| Function | Purpose |
+|----------|---------|
+| `fit_preprocessing_params()` | Compute parameters from training data |
+| `apply_preprocessing()` | Apply transformations using stored params |
+| `join_all_features()` | Join aggregated features to main data |
+| `ensure_column_consistency()` | Align train/test columns |
+| `run_preprocessing_pipeline()` | Execute complete pipeline |
+
+# Session Info
+
+```{r}
+#| label: session-info
+
+sessionInfo()
+```

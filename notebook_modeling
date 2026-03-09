@@ -1,0 +1,320 @@
+---
+title: "Home Credit Default Prediction - Modeling"
+format: 
+  html:
+    code-fold: true
+    toc: true
+execute:
+  warning: false
+  message: false
+---
+
+## Business Problem
+
+Home Credit aims to broaden financial inclusion by providing loans to individuals with limited or no credit history. The goal is to predict the probability of loan default (`TARGET = 1`) to:
+- Minimize financial losses from defaults
+- Avoid rejecting creditworthy applicants
+- Provide fair access to credit for underserved populations
+
+## Setup
+
+```{r}
+#| label: setup
+
+library(tidyverse)
+library(tidymodels)
+library(finetune)
+library(probably)
+
+tidymodels_prefer()
+theme_set(theme_minimal())
+
+# For reproducibility
+set.seed(2024)
+```
+
+## Data Preparation
+
+```{r}
+#| label: load-data
+
+# Load the training data
+train_raw <- read_csv("data/application_train.csv", show_col_types = FALSE)
+
+# Quick overview
+glimpse(train_raw)
+```
+
+```{r}
+#| label: target-distribution
+
+train_raw |> 
+
+  count(TARGET) |> 
+
+  mutate(pct = n / sum(n))
+```
+
+```{r}
+#| label: data-cleaning
+
+train_clean <- train_raw |> 
+
+  mutate(
+    TARGET = factor(TARGET, levels = c(1, 0), labels = c("default", "no_default")),
+    across(where(is.character), as.factor)
+  ) |> 
+  # Select key features for modeling (adjust based on EDA)
+  select(
+    TARGET,
+    # Demographics
+    CODE_GENDER, FLAG_OWN_CAR, FLAG_OWN_REALTY,
+    CNT_CHILDREN, AMT_INCOME_TOTAL, AMT_CREDIT, AMT_ANNUITY,
+    # Employment
+    NAME_INCOME_TYPE, NAME_EDUCATION_TYPE, NAME_FAMILY_STATUS,
+    DAYS_BIRTH, DAYS_EMPLOYED, DAYS_REGISTRATION,
+    # External scores
+    EXT_SOURCE_1, EXT_SOURCE_2, EXT_SOURCE_3,
+    # Other
+    REGION_POPULATION_RELATIVE, DAYS_ID_PUBLISH
+)
+```
+
+## Train/Test Split
+
+```{r}
+#| label: data-split
+
+splits <- initial_split(train_clean, prop = 0.8, strata = TARGET)
+train_data <- training(splits)
+test_data <- testing(splits)
+
+# Cross-validation folds
+cv_folds <- vfold_cv(train_data, v = 5, strata = TARGET)
+```
+## Feature Engineering Recipe
+```{r}
+#| label: recipe
+
+base_recipe <- recipe(TARGET ~ ., data = train_data) |> 
+  step_impute_median(all_numeric_predictors()) |> 
+  step_impute_mode(all_nominal_predictors()) |> 
+  step_novel(all_nominal_predictors()) |> 
+  step_dummy(all_nominal_predictors()) |> 
+  step_zv(all_predictors()) |> 
+  step_normalize(all_numeric_predictors())
+```
+
+## Model Specifications
+
+### Benchmark: Null Model
+
+```{r}
+#| label: null-model
+
+null_spec <- null_model(mode = "classification") |> 
+ set_engine("parsnip")
+```
+
+### Logistic Regression
+
+```{r}
+#| label: logistic-spec
+
+logistic_spec <- logistic_reg(penalty = tune(), mixture = 1) |> 
+  set_engine("glmnet") |> 
+  set_mode("classification")
+```
+
+### Random Forest
+
+```{r}
+#| label: rf-spec
+
+rf_spec <- rand_forest(mtry = tune(), min_n = tune(), trees = 500) |> 
+  set_engine("ranger", importance = "impurity") |> 
+  set_mode("classification")
+```
+
+### Gradient Boosting (XGBoost)
+
+```{r}
+#| label: xgb-spec
+
+xgb_spec <- boost_tree(
+  trees = 500,
+  tree_depth = tune(),
+  min_n = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune()
+) |> 
+  set_engine("xgboost") |> 
+  set_mode("classification")
+```
+
+## Workflows
+
+```{r}
+#| label: workflows
+
+null_wf <- workflow() |> 
+  add_recipe(base_recipe) |> 
+  add_model(null_spec)
+
+logistic_wf <- workflow() |> 
+  add_recipe(base_recipe) |> 
+  add_model(logistic_spec)
+
+rf_wf <- workflow() |> 
+  add_recipe(base_recipe) |> 
+  add_model(rf_spec)
+
+xgb_wf <- workflow() |> 
+  add_recipe(base_recipe) |> 
+  add_model(xgb_spec)
+```
+
+## Cross-Validation & Tuning
+
+```{r}
+#| label: cv-metrics
+
+cv_metrics <- metric_set(roc_auc, pr_auc, accuracy)
+ctrl <- control_grid(save_pred = TRUE, verbose = FALSE)
+```
+
+### Null Model (Benchmark)
+
+```{r}
+#| label: fit-null
+
+null_res <- fit_resamples(null_wf, resamples = cv_folds, metrics = cv_metrics)
+```
+
+### Logistic Regression
+
+```{r}
+#| label: tune-logistic
+
+logistic_grid <- grid_regular(penalty(range = c(-4, 0)), levels = 10)
+
+logistic_res <- tune_grid(
+  logistic_wf,
+  resamples = cv_folds,
+  grid = logistic_grid,
+  metrics = cv_metrics,
+  control = ctrl
+)
+```
+
+### Random Forest
+
+```{r}
+#| label: tune-rf
+
+rf_grid <- grid_latin_hypercube(
+  mtry(range = c(3, 10)),
+  min_n(range = c(10, 50)),
+  size = 15
+)
+
+rf_res <- tune_grid(
+  rf_wf,
+  resamples = cv_folds,
+  grid = rf_grid,
+  metrics = cv_metrics,
+  control = ctrl
+)
+```
+
+### XGBoost
+
+```{r}
+#| label: tune-xgb
+
+xgb_grid <- grid_latin_hypercube(
+  tree_depth(range = c(3, 8)),
+  min_n(range = c(10, 40)),
+  learn_rate(range = c(-3, -1)),
+  loss_reduction(),
+  size = 20
+)
+
+xgb_res <- tune_grid(
+  xgb_wf,
+  resamples = cv_folds,
+  grid = xgb_grid,
+  metrics = cv_metrics,
+  control = ctrl
+)
+```
+
+## Results Comparison
+
+```{r}
+#| label: collect-results
+
+results <- bind_rows(
+  collect_metrics(null_res) |> mutate(model = "Null"),
+  show_best(logistic_res, metric = "roc_auc", n = 1) |> mutate(model = "Logistic"),
+  show_best(rf_res, metric = "roc_auc", n = 1) |> mutate(model = "Random Forest"),
+  show_best(xgb_res, metric = "roc_auc", n = 1) |> mutate(model = "XGBoost")
+) |> 
+  filter(.metric == "roc_auc") |> 
+  select(model, mean, std_err) |> 
+  arrange(desc(mean))
+
+results
+```
+
+```{r}
+#| label: plot-results
+
+results |> 
+  ggplot(aes(x = reorder(model, mean), y = mean)) +
+  geom_col(fill = "steelblue") +
+  geom_errorbar(aes(ymin = mean - std_err, ymax = mean + std_err), width = 0.2) +
+  coord_flip() +
+  labs(
+    title = "Model Comparison: ROC AUC",
+    x = NULL,
+    y = "ROC AUC (CV)"
+  )
+```
+
+## Final Model
+
+```{r}
+#| label: final-fit
+
+# Select best model (update based on results)
+best_params <- select_best(xgb_res, metric = "roc_auc")
+
+final_wf <- finalize_workflow(xgb_wf, best_params)
+final_fit <- last_fit(final_wf, splits, metrics = cv_metrics)
+
+collect_metrics(final_fit)
+```
+
+```{r}
+#| label: roc-curve
+
+final_fit |> 
+  collect_predictions() |> 
+  roc_curve(TARGET, .pred_default) |> 
+  autoplot()
+```
+
+## Summary
+
+Key findings:
+- **Class imbalance**: ~8% default rate requires careful metric selection
+- **Best model**: [Update after running] achieved ROC AUC of [X]
+- **Key predictors**: External source scores are typically most predictive
+
+Next steps:
+- Feature engineering from supplementary tables
+- Address class imbalance (downsampling, SMOTE)
+- Ensemble methods
+- Threshold optimization for business constraints
+

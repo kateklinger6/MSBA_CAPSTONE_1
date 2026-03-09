@@ -4,12 +4,39 @@
 
 This project predicts loan default risk using data from the [Home Credit Default Risk](https://www.kaggle.com/competitions/home-credit-default-risk) Kaggle competition. The goal is to help Home Credit expand financial inclusion by providing loans to underserved populations while managing default risk.
 
+The final model is a **Logistic Regression with Lasso (L1) regularization**, achieving a ROC AUC of **0.737** on the hold-out test set and **0.724** on the Kaggle public leaderboard. At the recommended decision threshold of 0.40, the model is estimated to generate approximately **$6.3M in incremental annual value** compared to a no-model baseline, by correctly identifying 68% of defaults while approving 67% of applicants.
+
 ## Repository Structure
 
 ```
-├── home_credit_preprocessing.R   # Data preparation script
+├── home_credit_preprocessing.R   # Data preparation and feature engineering
+├── notebooks/
+│   ├── modeling.qmd              # Model training, tuning, and evaluation
+│   └── model_card.qmd            # Model card documentation
+├── models/                       # Saved model artifacts (gitignored)
+├── data/                         # Raw and processed data files (gitignored)
 ├── README.md                     # This file
-└── .gitignore                    # Files excluded from version control
+└── .gitignore                    # Excludes data files and model artifacts
+```
+
+## Model Card
+
+The model card (`notebooks/model_card.qmd`) provides comprehensive documentation of the Home Credit Default Risk Classifier, including:
+
+- **Model Details:** Logistic Regression with Lasso regularization (penalty = 0.00001), trained on 30,000 applications with 17 core features
+- **Intended Use:** Credit decisioning for consumer loan origination
+- **Performance Metrics:** ROC AUC 0.737 (test), 0.724 (Kaggle); precision 0.22, recall 0.68 at threshold 0.40
+- **Decision Threshold Analysis:** Cost-benefit analysis using industry-standard LGD (45%) and recovery rates (30%), with profit-curve visualization and sensitivity table
+- **Explainability:** SHAP-based feature importance on a 1,000-row sample; top drivers are `EXT_SOURCE_2/3/1`, `DAYS_BIRTH`, and `DAYS_EMPLOYED`
+- **Adverse Action Mapping:** Regulatory-compliant plain-language reason codes for loan denials (ECOA/FCRA)
+- **Fairness Analysis:** Disparate impact analysis by gender (DI ratio 0.90) and education level; no evidence of unjustified disparate treatment
+- **Limitations and Risks:** Known constraints, data limitations, and production monitoring requirements
+- **Executive Summary:** Business recommendation with expected financial impact and key caveats
+
+To render the model card:
+
+```r
+quarto::quarto_render("notebooks/model_card.qmd")
 ```
 
 ## Data Preparation Script

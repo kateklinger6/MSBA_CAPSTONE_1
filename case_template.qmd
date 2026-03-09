@@ -1,0 +1,370 @@
+---
+title: "Exploratory Data Analysis: Home Credit Default Risk"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    embed-resources: true
+execute:
+  include: true
+  eval: true    
+  warning: false
+  message: false
+
+---
+
+## Exploratory Data Analysis
+### Business Problem
+Home Credit must improve its ability to distinguish between low-risk and high-risk applicants, especially among customers with limited credit history (“thin files”). In the current process, there is a tradeoff: overly conservative decisions can reject applicants who would have repaid (lost growth), while overly aggressive approvals can increase defaults and credit losses. The goal of this project is to use application + supplementary transactional data to better predict default risk so Home Credit can expand access to credit while keeping portfolio risk within acceptable thresholds.
+
+Why EDA matters here: This EDA focuses on understanding the structure of the project data, the level/patterns of missingness, potential data-quality problems, and early signals of predictive relationships that will guide feature engineering and model selection later (CRISP-DM data understanding/prep).
+
+### Data Set Up
+```{r}
+library(tidyverse)
+library(skimr)
+library(janitor)
+
+application_train <- read_csv("application_train.csv") %>%
+  clean_names()
+
+application_test <- read_csv("application_test.csv") %>%
+  clean_names()
+
+dim(application_train)
+dim(application_test)
+
+skim(application_train)
+```
+
+In this section, I load the training and test application data and standardize column names. I also generate quick summaries to understand dataset size, variable types, and basic distribution patterns. These checks help confirm the data loaded correctly and identify early warnings (e.g., unexpected data types, unusually large maxima, or heavy missingness) before deeper exploration.
+
+### Train vs Test Data Set
+```{r}
+# Compare column names
+setdiff(names(application_train), names(application_test))
+setdiff(names(application_test), names(application_train))
+```
+
+The train and test datasets have the same feature columns, with the expected exception that only the training set contains the target variable (default indicator). This is important because all data preparation steps (cleaning, transformations, imputation rules, and feature engineering) must be designed so they can be applied consistently to both train and test without “peeking” at outcomes in the test set.
+
+### Target Variable Exploration
+```{r}
+#Distribution of Loan Default
+ggplot(application_train, aes(x = factor(target))) +
+  geom_bar() +
+  labs(
+    title = "Distribution of Loan Default",
+    x = "Default Status (0 = No Default, 1 = Default)",
+    y = "Number of Applicants"
+  )
+
+
+application_train %>%
+  count(target) %>%
+  mutate(proportion = n / sum(n))
+```
+This project’s target variable represents whether an applicant defaulted (1) or did not default (0). Before modeling, it’s critical to understand whether the target is imbalanced, because imbalance affects which evaluation metrics matter and how we interpret “good” performance.
+
+In the training data, non-defaults (0) make up ~91.9% of observations and defaults (1) make up ~8.1%, indicating a meaningfully imbalanced outcome. A simple “majority class” classifier that predicts “no default” for everyone would achieve about 91.9% accuracy, which sounds high but provides limited business value because it fails to identify risky loans.
+
+Implication for modeling: Accuracy alone will be misleading. Later evaluation should focus on metrics that reward identifying defaults (e.g., AUC, precision/recall, PR-AUC, cost-sensitive metrics), and we may consider class weighting or threshold tuning depending on the business objective.
+
+```{r}
+# majority class baseline
+application_train %>%
+  count(target) %>%
+  summarise(baseline_accuracy = max(n) / sum(n))
+
+
+```
+
+
+### Relationships
+
+Next, I explore how selected predictors relate to default. The purpose is not to finalize a feature set yet, but to identify variables with strong signal and to develop intuition for feature engineering.
+
+I start with variables that are widely known (from prior Home Credit analyses and similar credit-risk contexts) to be informative, such as external credit scores (ext_source_1, ext_source_2, ext_source_3) and key applicant characteristics. Visual comparisons of distributions across target classes help highlight separation between default vs non-default groups.
+
+```{r}
+#external scores
+score_vars <- c("ext_source_1", "ext_source_2", "ext_source_3")
+
+application_train %>%
+  select(all_of(score_vars), target) %>%
+  pivot_longer(-target) %>%
+  ggplot(aes(x = factor(target), y = value)) +
+  geom_boxplot() +
+  facet_wrap(~ name) +
+  labs(
+    title = "External Credit Scores by Default Status",
+    x = "Default Status",
+    y = "Score Value"
+  )
+```
+
+The external score features show visible distribution differences by default status. In general, stronger predictors will show clear separation: the default group tends to concentrate at worse score values relative to non-default. These variables are promising early candidates for the baseline model and may interact with other features (income, age, credit amount, employment history).
+
+Potential next steps: explore monotonic patterns (e.g., default rate by score decile), check missingness in external scores, and consider whether non-linear models (GBMs) capture relationships better than purely linear models.
+
+```{r}
+#time and finacial variables - used AI to help me get these cleaner plots
+
+application_train <- application_train %>%
+  mutate(
+    # Clean placeholder
+    days_employed = if_else(days_employed == 365243, NA_real_, days_employed), # Removed this placeholder value as was causing issues
+
+    # Convert to positive values
+    age_years = -days_birth / 365.25,
+    employed_years = pmax(days_employed, 0) / 365.25
+  )
+
+log_plot_df <- application_train %>%
+  select(
+    amt_credit,
+    amt_income_total,
+    age_years,
+    employed_years,
+    target
+  ) %>%
+  pivot_longer(-target) %>%
+  mutate(
+    value_log = log1p(value),
+    name = recode(
+      name,
+      amt_credit = "log(amt_credit)",
+      amt_income_total = "log(amt_income_total)",
+      age_years = "log(age_years)",
+      employed_years = "log(employed_years)"
+    )
+  )
+ggplot(log_plot_df, aes(x = factor(target), y = value_log)) +
+  geom_boxplot(outlier.shape = NA) +
+  facet_wrap(~ name, scales = "free_y", ncol = 2) +
+  labs(
+    title = "Log-Transformed Financial and Time Variables by Default Status",
+    subtitle = "Log(1 + x) applied to reduce skew and improve comparability",
+    x = "Default Status (0 = No Default, 1 = Default)",
+    y = "Log-Transformed Value"
+  )
+
+#categorical variables
+
+application_train %>%
+  group_by(name_income_type, target) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(name_income_type) %>%
+  mutate(default_rate = n / sum(n)) %>%
+  filter(target == 1) %>%
+  ggplot(aes(x = reorder(name_income_type, default_rate), y = default_rate)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Default Rate by Income Type",
+    x = "Income Type",
+    y = "Default Rate"
+  )
+
+```
+
+For categorical predictors (like income type), I compare default rates within each category to see which applicant groups are systematically higher risk. Differences here can be directly useful in modeling (as encoded factors) and also guide feature engineering (e.g., grouping rare categories, creating higher-level indicators).
+
+### Missing Data Exploration
+Missingness is a major theme in this dataset, and handling it well is often as important as the model choice. Here, I quantify missingness by feature and compare patterns between train and test to ensure missingness behavior is consistent. A number of variables have very high missing rates. For example, several housing/building-related variables show missingness around ~0.66–0.70 (e.g., commonarea_*, nonlivingapartments_*, years_build_*). This level of missingness suggests these fields are either only collected for a subset of applicants or are conditionally applicable.
+
+
+
+```{r}
+#Training Data
+missing_summary_train <- application_train %>%
+  summarise(across(everything(), ~ mean(is.na(.)))) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "variable",
+    values_to = "missing_rate"
+  ) %>%
+  arrange(desc(missing_rate))
+
+head(missing_summary_train, 15)
+
+missing_summary_train %>%
+  slice_max(missing_rate, n = 20) %>%
+  ggplot(aes(x = reorder(variable, missing_rate), y = missing_rate)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top Variables by Missingness (Training Data)",
+    x = "Variable",
+    y = "Proportion Missing"
+  )
+
+# Train vs Test
+missing_compare <- bind_rows(
+  application_train %>% mutate(dataset = "train"),
+  application_test  %>% mutate(dataset = "test")
+) %>%
+  group_by(dataset) %>%
+  summarise(across(everything(), ~ mean(is.na(.))), .groups = "drop") %>%
+  pivot_longer(
+    cols = -dataset,
+    names_to = "variable",
+    values_to = "missing_rate"
+  )
+
+# Visual comparison
+missing_compare %>%
+  slice_max(missing_rate, n = 15) %>%
+  ggplot(aes(x = reorder(variable, missing_rate), y = missing_rate, fill = dataset)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(
+    title = "Comparison of Missingness: Training vs Test Data",
+    x = "Variable",
+    y = "Proportion Missing",
+    fill = "Dataset"
+  )
+```
+
+I will use a tiered approach to missing data:
+  Do not drop rows as a primary strategy. With many fields missing for different reasons, row deletion would remove a large fraction of applicants and can bias the sample toward applicants with more complete records.
+  Drop only extremely sparse and low-value columns, especially if:
+    missing rate is extremely high (e.g., > 90%), and
+    the variable is not business-critical or is redundant with other features.
+
+Finally, I verify that missingness patterns are broadly similar in train vs test; if patterns differ, I would avoid aggressive feature removal based only on train because it may behave differently at scoring time.
+
+### Data Quality
+
+In this section I look for “values that don’t make sense” or are likely placeholders rather than real measurements. These issues can silently damage models if not handled.
+```{r}
+#time based variables
+summary(application_train$days_employed)
+```
+
+days_employed includes mostly negative values, which is expected given the dataset convention (many time variables are stored as negative counts relative to the application date). However, a data-quality issue I found in one of the prior sections is the placeholder value 365243 for days_employed, which does not represent a real employment duration. I converted that placeholder to NA before creating derived features like employed_years and applicant age. That cleaning step ensures that extreme placeholder values don’t distort summaries or model learning.
+
+The summary also shows a large number of missing values for days_employed (over 55k), reinforcing the need for imputation + missing indicators rather than row deletion.
+
+```{r}
+#finanical/skewed
+summary(application_train$amt_income_total)
+summary(application_train$amt_credit)
+```
+
+Financial variables are heavily right-skewed (for example, amt_income_total has a very large maximum relative to the median). These may be legitimate high-income applicants, but skew can still create modeling challenges:
+  linear models may be overly influenced by extreme values,
+  distance-based models can be distorted without scaling,
+  log transforms can often stabilize distributions.
+
+Planned handling: For models sensitive to skew (linear/logistic), I will consider log transforms (e.g., log1p) for income/credit/annuity-like features and/or winsorization rules if justified. For tree-based models, transformation is often less necessary, but it can still improve stability and interpretability.
+
+```{r}
+#near - zero
+application_train %>%
+  select(where(is.character)) %>%
+  summarise(across(everything(), n_distinct))
+```
+
+Variables with little variation (e.g., near-constant flags) rarely improve predictive performance and can add noise or complicate encoding. I check distinct category counts for character features to identify variables that may be low-information. In later preparation, I will confirm near-zero variance using an explicit NZV function (or by checking frequency ratios) and remove those features if they do not help validation performance.
+
+### Joining Data
+
+The application dataset captures static, self-reported information at the applicant level, but it does not fully reflect an applicant’s historical credit behavior. Supplementary transactional datasets, such as bureau records, provide additional behavioral context but are stored at a finer grain, with multiple rows per applicant. To incorporate this information into the modeling pipeline, these datasets must be aggregated to the application level before joining.
+
+```{r}
+#transactional data
+bureau <- read_csv("bureau.csv") %>%
+  clean_names()
+
+dim(bureau)
+
+bureau_agg <- bureau %>%
+  group_by(sk_id_curr) %>%
+  summarise(
+    bureau_loan_count = n(),
+    bureau_credit_active_count = sum(credit_active == "Active", na.rm = TRUE),
+    bureau_credit_closed_count = sum(credit_active == "Closed", na.rm = TRUE),
+    bureau_avg_credit_amt = mean(amt_credit_sum, na.rm = TRUE),
+    bureau_max_overdue = max(amt_credit_max_overdue, na.rm = TRUE)
+  )
+
+application_train_joined <- application_train %>%
+  left_join(bureau_agg, by = "sk_id_curr")
+
+```
+
+The bureau dataset contains one row per external credit record, meaning a single applicant may appear multiple times. This confirms that the bureau data is not directly joinable to the application data without aggregation. Understanding this grain mismatch is essential to avoid duplicating rows or unintentionally weighting certain applicants more heavily. To align the bureau data with the application grain (sk_id_curr), I aggregate the transactional records into a small set of summary features. These features capture key aspects of an applicant’s external credit history, including the number of bureau-reported loans, current versus closed credit exposure, and delinquency-related measures. This approach balances information retention with simplicity, making the joined dataset suitable for exploratory analysis and downstream modeling. The aggregated bureau features are joined to the application training data using a left join. Applicants without bureau records retain missing values for these features, which may itself be informative, as a lack of recorded credit history is common among underbanked applicants and may correlate with default risk.
+
+### Joined Data Exploration
+```{r}
+#missingness
+application_train_joined %>%
+  summarise(across(starts_with("bureau_"), ~ mean(is.na(.))))
+```
+
+A substantial proportion of applicants have missing bureau-derived features, reflecting the absence of external credit records rather than data collection errors. Because this missingness is systematic, removing these rows would disproportionately exclude applicants with thin or no credit histories. Instead, missing bureau features will be handled through imputation and/or explicit indicator variables during modeling.
+
+```{r}
+#loan count
+application_train_joined %>%
+  mutate(
+    bureau_loan_bin = case_when(
+      bureau_loan_count == 0 ~ "0",
+      bureau_loan_count == 1 ~ "1",
+      bureau_loan_count == 2 ~ "2",
+      bureau_loan_count >= 3 ~ "3+"
+    )
+  ) %>%
+  group_by(bureau_loan_bin) %>%
+  summarise(
+    default_rate = mean(target, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = bureau_loan_bin, y = default_rate)) +
+  geom_col() +
+  labs(
+    title = "Default Rate by Number of Bureau Loans",
+    subtitle = "Loan counts grouped for interpretability",
+    x = "Number of Bureau Loans",
+    y = "Default Rate"
+  )
+
+```
+
+The number of bureau-reported loans shows a relationship with default behavior. Applicants with higher numbers of external credit obligations tend to exhibit higher default rates, suggesting that overall credit exposure is a meaningful risk signal. Although the distributions overlap substantially between defaulters and non-defaulters, the monotonic increase in default risk across loan-count bins indicates that this feature may contribute useful information when combined with other predictors.
+
+```{r}
+#max overdue amount
+application_train_joined %>%
+  mutate(
+    overdue_bin = case_when(
+      bureau_max_overdue == 0 ~ "0",
+      bureau_max_overdue <= 1e3 ~ "1–1K",
+      bureau_max_overdue <= 1e4 ~ "1K–10K",
+      bureau_max_overdue > 1e4 ~ "10K+"
+    )
+  ) %>%
+  group_by(overdue_bin) %>%
+  summarise(
+    default_rate = mean(target, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = overdue_bin, y = default_rate)) +
+  geom_col() +
+  labs(
+    title = "Default Rate by Maximum Bureau Overdue Amount",
+    x = "Max Overdue Amount (Binned)",
+    y = "Default Rate"
+  )
+
+```
+
+The raw distribution of maximum bureau overdue amounts is highly zero-inflated and extremely right-skewed, as most applicants have no recorded overdue while a small number exhibit very large delinquency amounts. To improve interpretability, overdue behavior is examined in two parts: the presence of any overdue and the magnitude of overdue among affected applicants. Applicants with any recorded overdue show higher default rates, and among those with non-zero overdue amounts, larger delinquency values are associated with increased risk. This suggests that both an overdue indicator and a transformed overdue magnitude feature may be valuable inputs for downstream models.
+
+### AI Support
+The AI assistant was used selectively to support the exploratory data analysis process, primarily for troubleshooting coding issues, improving the clarity of visualizations, and refining written interpretation between code chunks to avoid rambling. The assistant also helped with organizing sections of the Quarto notebook to ensure clear structure and thought process. All analysis, data exploration, and methodological decisions—such as handling missing data, transforming variables, and interpreting relationships—were conducted by me. It was very helpful to bounce thoughts off of to see if my thought process would drive to conclusions or if it was just a thought and unnecessary clutter.
