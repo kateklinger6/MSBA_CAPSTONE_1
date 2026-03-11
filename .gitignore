@@ -41,3 +41,8 @@ venv/
 # Large files
 *.zip
 *.tar.gz
+
+# Kaggle submission files
+submissions/
+*_submission.csv
+submission.csv
