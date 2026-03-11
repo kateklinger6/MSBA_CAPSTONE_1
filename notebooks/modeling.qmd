@@ -4,6 +4,7 @@ format:
   html:
     code-fold: true
     toc: true
+    embed-resources: true 
 execute:
   warning: false
   message: false
