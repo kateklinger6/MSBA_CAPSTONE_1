@@ -1046,34 +1046,44 @@ run_preprocessing_pipeline <- function(train_path,
 }
 
 # ==============================================================================
-# EXAMPLE USAGE
+# EXAMPLE USAGE 
 # ==============================================================================
 
-# To run the full pipeline, uncomment and modify the paths below:
-#
-# # Set your data directory
-# data_dir <- "/Users/kateklinger/Desktop/Grad School/Capstone 1/MSBA_CAPSTONE_1/data"
-# 
-# # Run the full pipeline
-# result <- run_preprocessing_pipeline(
-#   train_path = file.path(data_dir, "application_train.csv"),
-#   test_path = file.path(data_dir, "application_test.csv"),
-#   bureau_path = file.path(data_dir, "bureau.csv"),
-#   prev_app_path = file.path(data_dir, "previous_application.csv"),
-#   installments_path = file.path(data_dir, "installments_payments.csv")
-# )
-# 
-# # Access results
-# train_processed <- result$train
-# test_processed <- result$test
-# params <- result$params
-# 
-# # Save processed data
-# write_csv(train_processed, file.path(data_dir, "train_processed.csv"))
-# write_csv(test_processed, file.path(data_dir, "test_processed.csv"))
-# 
-# # Save preprocessing parameters for reproducibility
-# saveRDS(params, file.path(data_dir, "preprocessing_params.rds"))
+# Set your base data directory
+base_dir <- "/Users/kateklinger/Desktop/Grad School/Capstone 1/MSBA_CAPSTONE_1"
+raw_data_dir <- file.path(base_dir, "data", "raw")
+processed_data_dir <- file.path(base_dir, "data", "processed")
+
+# Create processed directory if it doesn't exist
+if (!dir.exists(processed_data_dir)) {
+  dir.create(processed_data_dir, recursive = TRUE)
+}
+
+# Run the full pipeline with raw data paths
+result <- run_preprocessing_pipeline(
+  train_path = file.path(raw_data_dir, "application_train.csv"),
+  test_path = file.path(raw_data_dir, "application_test.csv"),
+  bureau_path = file.path(raw_data_dir, "bureau.csv"),
+  prev_app_path = file.path(raw_data_dir, "previous_application.csv"),
+  installments_path = file.path(raw_data_dir, "installments_payments.csv")
+)
+
+# Access results
+train_processed <- result$train
+test_processed <- result$test
+params <- result$params
+
+# Save processed data to processed folder
+write_csv(train_processed, file.path(processed_data_dir, "train_processed.csv"))
+write_csv(test_processed, file.path(processed_data_dir, "test_processed.csv"))
+
+# Save preprocessing parameters for reproducibility
+saveRDS(params, file.path(processed_data_dir, "preprocessing_params.rds"))
+
+# Optionally save the aggregated features separately for analysis
+write_csv(result$aggregations$bureau, file.path(processed_data_dir, "bureau_aggregated.csv"))
+write_csv(result$aggregations$previous_application, file.path(processed_data_dir, "prev_app_aggregated.csv"))
+write_csv(result$aggregations$installments, file.path(processed_data_dir, "installments_aggregated.csv"))
 
 # ------------------------------------------------------------------------------
 # INDIVIDUAL FUNCTION USAGE EXAMPLES

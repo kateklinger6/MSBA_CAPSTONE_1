@@ -71,18 +71,32 @@ A comprehensive R script containing reusable functions for cleaning, transformin
 
 #### How To Use
 
-```r
 # Load the preprocessing functions
 source("home_credit_preprocessing.R")
 
+# Set up directory paths
+base_dir <- "/path/to/your/project"
+raw_data_dir <- file.path(base_dir, "data", "raw")
+processed_data_dir <- file.path(base_dir, "data", "processed")
+
+# Create processed directory if it doesn't exist
+if (!dir.exists(processed_data_dir)) {
+  dir.create(processed_data_dir, recursive = TRUE)
+}
+
 # Run the complete pipeline
 result <- run_preprocessing_pipeline(
-  train_path = "application_train.csv",
-  test_path = "application_test.csv",
-  bureau_path = "bureau.csv",
-  prev_app_path = "previous_application.csv",
-  installments_path = "installments_payments.csv"
+  train_path = file.path(raw_data_dir, "application_train.csv"),
+  test_path = file.path(raw_data_dir, "application_test.csv"),
+  bureau_path = file.path(raw_data_dir, "bureau.csv"),
+  prev_app_path = file.path(raw_data_dir, "previous_application.csv"),
+  installments_path = file.path(raw_data_dir, "installments_payments.csv")
 )
+
+# Save processed data
+write_csv(result$train, file.path(processed_data_dir, "train_processed.csv"))
+write_csv(result$test, file.path(processed_data_dir, "test_processed.csv"))
+saveRDS(result$params, file.path(processed_data_dir, "preprocessing_params.rds"))
 
 # Access processed data
 train_processed <- result$train
